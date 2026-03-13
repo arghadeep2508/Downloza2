@@ -23,11 +23,11 @@ download_state = {}
 active_ip_downloads = {}
 
 # ======================================
-# VALIDATE FFMPEG
+# CHECK FFMPEG
 # ======================================
 
 if not shutil.which("ffmpeg"):
-    print("WARNING: FFmpeg not found. Install FFmpeg and add to PATH.")
+    print("WARNING: FFmpeg not found")
 
 # ======================================
 # FILENAME SANITIZER
@@ -40,6 +40,7 @@ def sanitize_filename(name: str):
     name = re.sub(r'_+', '_', name)
     return name[:40]
 
+
 # ======================================
 # URL VALIDATION
 # ======================================
@@ -47,21 +48,37 @@ def sanitize_filename(name: str):
 def valid_url(url):
     return isinstance(url, str) and url.startswith(("http://", "https://"))
 
+
+# ======================================
+# YTDLP BASE OPTIONS
+# ======================================
+
+def base_ydl_opts():
+
+    return {
+        "quiet": True,
+        "nocheckcertificate": True,
+        "ignoreerrors": True,
+        "noplaylist": True,
+        "retries": 5,
+        "fragment_retries": 5,
+        "socket_timeout": 30,
+        "http_headers": {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36"
+        }
+    }
+
+
 # ======================================
 # FORMAT EXTRACTION
 # ======================================
 
 def get_available_formats(url):
 
-    ydl_opts = {
-        "quiet": True,
-        "skip_download": True,
-        "noplaylist": True,
-        "nocheckcertificate": True,
-        "ignoreerrors": True
-    }
+    opts = base_ydl_opts()
+    opts["skip_download"] = True
 
-    with YoutubeDL(ydl_opts) as ydl:
+    with YoutubeDL(opts) as ydl:
         info = ydl.extract_info(url, download=False)
 
     if not info:
@@ -78,11 +95,15 @@ def get_available_formats(url):
         height = f.get("height")
 
         if height and height not in seen:
+
             seen.add(height)
 
             size = f.get("filesize") or f.get("filesize_approx")
 
-            size_text = f"{round(size/1024/1024,2)} MB" if size else "Unknown"
+            if size:
+                size_text = f"{round(size/1024/1024,2)} MB"
+            else:
+                size_text = "Unknown"
 
             formats.append({
                 "height": height,
@@ -95,6 +116,7 @@ def get_available_formats(url):
         formats.append({"height": "Best", "size": "Auto"})
 
     return formats
+
 
 # ======================================
 # ROUTE: GET FORMATS
@@ -119,8 +141,10 @@ def formats():
         })
 
     except Exception as e:
+
         print("Format error:", e)
         return jsonify({"error": "Could not fetch formats"})
+
 
 # ======================================
 # DOWNLOAD WORKER
@@ -137,26 +161,29 @@ def download_worker(download_id, url, height, user_ip):
 
             if total and download_id in download_state:
 
-                download_state[download_id]["progress"] = int(downloaded * 90 / total)
+                percent = int(downloaded * 90 / total)
+
+                download_state[download_id]["progress"] = percent
                 download_state[download_id]["status"] = "downloading"
 
     try:
 
         download_state[download_id]["status"] = "processing"
 
-        with YoutubeDL({"quiet": True}) as ydl:
+        opts = base_ydl_opts()
+        opts["skip_download"] = True
 
+        with YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=False)
 
-            if not info:
-                download_state[download_id]["status"] = "error"
-                return
+        if not info:
+            download_state[download_id]["status"] = "error"
+            return
 
-            if info.get("_type") == "playlist" and info.get("entries"):
-                info = info["entries"][0]
+        if info.get("_type") == "playlist" and info.get("entries"):
+            info = info["entries"][0]
 
-            raw_title = info.get("title", "video")
-
+        raw_title = info.get("title", "video")
         safe_title = sanitize_filename(raw_title)
 
         final_filename = f"{safe_title}_{download_id}.mp4"
@@ -173,14 +200,15 @@ def download_worker(download_id, url, height, user_ip):
 
             format_string = "bestvideo+bestaudio/best"
 
-        ydl_opts = {
+        ydl_opts = base_ydl_opts()
+
+        ydl_opts.update({
+
             "format": format_string,
             "outtmpl": final_path,
-            "noplaylist": True,
-            "quiet": True,
-            "progress_hooks": [progress_hook],
             "merge_output_format": "mp4",
-            "http_headers": {"User-Agent": "Mozilla/5.0"},
+            "progress_hooks": [progress_hook],
+
             "postprocessor_args": {
                 "ffmpeg": [
                     "-c:v", "copy",
@@ -188,7 +216,8 @@ def download_worker(download_id, url, height, user_ip):
                     "-b:a", "192k"
                 ]
             }
-        }
+
+        })
 
         with YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
@@ -200,6 +229,7 @@ def download_worker(download_id, url, height, user_ip):
             download_state[download_id]["filename"] = final_filename
 
         else:
+
             download_state[download_id]["status"] = "error"
 
     except Exception as e:
@@ -218,6 +248,7 @@ def download_worker(download_id, url, height, user_ip):
             if active_ip_downloads[user_ip] <= 0:
                 active_ip_downloads.pop(user_ip)
 
+
 # ======================================
 # ROUTE: START DOWNLOAD
 # ======================================
@@ -226,10 +257,10 @@ def download_worker(download_id, url, height, user_ip):
 def download():
 
     user_ip = request.remote_addr
-
     current = active_ip_downloads.get(user_ip, 0)
 
     if current >= MAX_CONCURRENT_PER_IP:
+
         return jsonify({
             "error": "Please wait until your current download finishes."
         })
@@ -247,21 +278,26 @@ def download():
     download_id = uuid.uuid4().hex[:8]
 
     download_state[download_id] = {
+
         "progress": 0,
         "status": "starting",
         "filename": None,
         "created_at": time.time()
+
     }
 
     thread = threading.Thread(
+
         target=download_worker,
         args=(download_id, url, height, user_ip),
         daemon=True
+
     )
 
     thread.start()
 
     return jsonify({"download_id": download_id})
+
 
 # ======================================
 # ROUTE: PROGRESS
@@ -279,6 +315,7 @@ def progress(download_id):
         "progress": data.get("progress", 0),
         "status": data.get("status", "unknown")
     })
+
 
 # ======================================
 # ROUTE: DOWNLOAD FILE
@@ -304,8 +341,9 @@ def download_file(download_id):
 
     return "File missing on server.", 404
 
+
 # ======================================
-# AUTO CLEANUP SYSTEM
+# AUTO CLEANUP
 # ======================================
 
 def cleanup_worker():
@@ -330,6 +368,7 @@ def cleanup_worker():
                     file_path = os.path.join(DOWNLOAD_FOLDER, filename)
 
                     if os.path.exists(file_path):
+
                         try:
                             os.remove(file_path)
                         except:
@@ -339,17 +378,14 @@ def cleanup_worker():
 
         time.sleep(60)
 
+
 # ======================================
-# HOME
+# PAGES
 # ======================================
 
 @app.route("/")
 def home():
     return render_template("index.html")
-
-# ======================================
-# EXTRA PAGES
-# ======================================
 
 @app.route("/privacy")
 def privacy():
@@ -367,6 +403,7 @@ def contact():
 def about():
     return render_template("about.html")
 
+
 # ======================================
 # RUN
 # ======================================
@@ -377,5 +414,5 @@ if __name__ == "__main__":
     cleanup_thread.start()
 
     port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
 
+    app.run(host="0.0.0.0", port=port)
