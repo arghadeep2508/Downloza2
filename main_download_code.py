@@ -30,16 +30,15 @@ if not shutil.which("ffmpeg"):
     print("WARNING: FFmpeg not found")
 
 # ======================================
-# FILENAME SANITIZER
+# SAFE FILENAME
 # ======================================
 
-def sanitize_filename(name: str):
+def sanitize_filename(name):
     name = re.sub(r'[<>:"/\\|?*]', '', name)
     name = name.encode("ascii", "ignore").decode()
-    name = re.sub(r'\s+', '_', name)
-    name = re.sub(r'_+', '_', name)
+    name = re.sub(r"\s+", "_", name)
+    name = re.sub(r"_+", "_", name)
     return name[:40]
-
 
 # ======================================
 # URL VALIDATION
@@ -48,26 +47,34 @@ def sanitize_filename(name: str):
 def valid_url(url):
     return isinstance(url, str) and url.startswith(("http://", "https://"))
 
-
 # ======================================
-# YTDLP BASE OPTIONS
+# BASE YTDLP OPTIONS
 # ======================================
 
 def base_ydl_opts():
 
     return {
+
         "quiet": True,
         "nocheckcertificate": True,
         "ignoreerrors": True,
         "noplaylist": True,
+
         "retries": 5,
         "fragment_retries": 5,
         "socket_timeout": 30,
+
         "http_headers": {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36"
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
+            "Accept-Language": "en-US,en;q=0.9"
+        },
+
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["android", "web"]
+            }
         }
     }
-
 
 # ======================================
 # FORMAT EXTRACTION
@@ -78,8 +85,15 @@ def get_available_formats(url):
     opts = base_ydl_opts()
     opts["skip_download"] = True
 
-    with YoutubeDL(opts) as ydl:
-        info = ydl.extract_info(url, download=False)
+    try:
+
+        with YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+
+    except Exception as e:
+
+        print("Extraction error:", e)
+        return [{"height": "Best", "size": "Auto"}]
 
     if not info:
         return [{"height": "Best", "size": "Auto"}]
@@ -117,7 +131,6 @@ def get_available_formats(url):
 
     return formats
 
-
 # ======================================
 # ROUTE: GET FORMATS
 # ======================================
@@ -125,13 +138,13 @@ def get_available_formats(url):
 @app.route("/get_formats", methods=["POST"])
 def formats():
 
+    data = request.get_json() or {}
+    url = data.get("url")
+
+    if not valid_url(url):
+        return jsonify({"error": "Invalid URL"})
+
     try:
-
-        data = request.get_json() or {}
-        url = data.get("url")
-
-        if not valid_url(url):
-            return jsonify({"error": "Invalid URL"})
 
         formats = get_available_formats(url)
 
@@ -144,7 +157,6 @@ def formats():
 
         print("Format error:", e)
         return jsonify({"error": "Could not fetch formats"})
-
 
 # ======================================
 # DOWNLOAD WORKER
@@ -207,15 +219,7 @@ def download_worker(download_id, url, height, user_ip):
             "format": format_string,
             "outtmpl": final_path,
             "merge_output_format": "mp4",
-            "progress_hooks": [progress_hook],
-
-            "postprocessor_args": {
-                "ffmpeg": [
-                    "-c:v", "copy",
-                    "-c:a", "aac",
-                    "-b:a", "192k"
-                ]
-            }
+            "progress_hooks": [progress_hook]
 
         })
 
@@ -248,9 +252,8 @@ def download_worker(download_id, url, height, user_ip):
             if active_ip_downloads[user_ip] <= 0:
                 active_ip_downloads.pop(user_ip)
 
-
 # ======================================
-# ROUTE: START DOWNLOAD
+# START DOWNLOAD
 # ======================================
 
 @app.route("/download", methods=["POST"])
@@ -260,10 +263,7 @@ def download():
     current = active_ip_downloads.get(user_ip, 0)
 
     if current >= MAX_CONCURRENT_PER_IP:
-
-        return jsonify({
-            "error": "Please wait until your current download finishes."
-        })
+        return jsonify({"error": "Please wait until your current download finishes."})
 
     data = request.get_json() or {}
 
@@ -278,29 +278,24 @@ def download():
     download_id = uuid.uuid4().hex[:8]
 
     download_state[download_id] = {
-
         "progress": 0,
         "status": "starting",
         "filename": None,
         "created_at": time.time()
-
     }
 
     thread = threading.Thread(
-
         target=download_worker,
         args=(download_id, url, height, user_ip),
         daemon=True
-
     )
 
     thread.start()
 
     return jsonify({"download_id": download_id})
 
-
 # ======================================
-# ROUTE: PROGRESS
+# PROGRESS
 # ======================================
 
 @app.route("/progress/<download_id>")
@@ -316,9 +311,8 @@ def progress(download_id):
         "status": data.get("status", "unknown")
     })
 
-
 # ======================================
-# ROUTE: DOWNLOAD FILE
+# DOWNLOAD FILE
 # ======================================
 
 @app.route("/download_file/<download_id>")
@@ -333,17 +327,15 @@ def download_file(download_id):
         return "File not ready yet.", 404
 
     filename = data.get("filename")
-
     file_path = os.path.join(DOWNLOAD_FOLDER, filename)
 
     if os.path.exists(file_path):
         return send_file(file_path, as_attachment=True)
 
-    return "File missing on server.", 404
-
+    return "File missing", 404
 
 # ======================================
-# AUTO CLEANUP
+# CLEANUP
 # ======================================
 
 def cleanup_worker():
@@ -378,7 +370,6 @@ def cleanup_worker():
 
         time.sleep(60)
 
-
 # ======================================
 # PAGES
 # ======================================
@@ -403,7 +394,6 @@ def contact():
 def about():
     return render_template("about.html")
 
-
 # ======================================
 # RUN
 # ======================================
@@ -414,5 +404,4 @@ if __name__ == "__main__":
     cleanup_thread.start()
 
     port = int(os.environ.get("PORT", 10000))
-
     app.run(host="0.0.0.0", port=port)
